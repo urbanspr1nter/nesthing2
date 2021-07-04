@@ -15,8 +15,7 @@
         "src/**/*"
     ],
     "exclude": [
-        "node_modules",
-        "**/*.test.ts"
+        "node_modules"
     ],
     // cf: https://www.typescriptlang.org/docs/handbook/configuring-watch.html
     "watchOptions": {
