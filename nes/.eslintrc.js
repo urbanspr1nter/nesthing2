@@ -30,6 +30,18 @@ module.exports = {
     'indent': [2, 4],
     'no-underscore-dangle': 0,
     'no-plusplus': 0,
-    'import/prefer-default-export': 0 
+    'import/prefer-default-export': 0,
+    'class-methods-use-this': 0,
+    'no-useless-return': 0,
+    'no-useless-constructor': 0,
+    'comma-dangle': 0,
+    "import/extensions": 0
   },
+  settings: {
+    "import/resolver": {
+      node: {
+        extensions: [".js", ".jsx", ".ts", ".tsx"]
+      }
+    }
+  }
 };

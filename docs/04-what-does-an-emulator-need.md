@@ -142,7 +142,8 @@ The NES has an 8-bit data bus. Therefore, it can only work with 1 single byte at
 It can be expressed with pseudo-code that looks like this:
 ```
 while(running) {
-    const op = fetch();
+    const addr = memory.read(pc);
+    const op = fetch(addr);
     const opContext = decode(op);
     const result = execute(opContext);
     store(opContext, result);
@@ -163,5 +164,194 @@ https://www.qmtpro.com/~nes/misc/nestest.log
 
 All one needs to do is download the `nestest.rom` found here: http://nickmass.com/images/nestest.nes
 
-Load the ROM bits into memory, and beging executing your CPU. The implemenation of your CPU should output the same log entries as `nestest.log`, and if it does, then you may have a pretty reliable CPU!
+Load the ROM bits into memory at address `0xC000` and beging executing your CPU. The implemenation of your CPU should output the same log entries as `nestest.log`, and if it does, then you may have a pretty reliable CPU!
 
+To see if there were any errors in the test, memory addresses `0x02`, and `0x03` can be inspected for the error codes and can be cross referenced in this document: https://www.qmtpro.com/~nes/misc/nestest.txt. The document notes that the results stored in these memory locations are reference to the **LAST** test that had  failed. 
+
+The goal is to to get `0x02` to read `0x00`. :)
+
+### Basic CPU Implementation
+
+#### Registers
+
+Some CPUs provide a lot of registers to store temporary data while executing instructions. For the 6502, there are only a few regiseters, and most storage of data during instruction execution happens in memory.
+
+THere are different types of addressing modes the 6502 has access memory and store/read temporary results. This effectively gives the 6502 the entire memory space and consequently "many registers".
+
+
+The CPU has registers:
+
+|Register|Description|Width (bits)|
+|--------|-----------|-----|
+|A|Accumulator - Generally holds the value for an instruction|8|
+|X, Y|These registers will often be used for forming memory addresses to access, and other temporary values.|8|
+|P|Processor status register. 8 fields in this register each field being 1 bit which indicate various conditions within the processor.|8|
+|S|Stack pointer. Self explanatory.|8|
+|PC|Program counter. Stores the current memory location to be executed **NEXT**.|16|
+
+![](./images/04-programming-model.png)
+* Taken from the WDC Programming the 65816 book.
+
+Wow just only 6 registers total!
+
+Now this can be represented by this simple interface here:
+
+```
+interface ICpuRegisters {
+    A: number;
+    X: number;
+    Y: number;
+    P: number;
+    S: number;
+    PC: number;
+}
+```
+
+And for a good start, the CPU can already have an implementation:
+
+```
+export default class Cpu {
+    private _cpuRegisters: ICpuRegisters;
+
+    constructor() {
+        this._cpuRegisters = {
+            A: 0,
+            X: 0,
+            Y: 0,
+            P: 0,
+            S: 0,
+            PC: 0
+        };
+    }
+
+    private get A() {
+        return this._cpuRegisters.A;
+    }
+
+    private get X() {
+        return this._cpuRegisters.X;
+    }
+
+    private get Y() {
+        return this._cpuRegisters.Y;
+    }
+
+    private get P() {
+        return this._cpuRegisters.P;
+    }
+
+    private get S() {
+        return this._cpuRegisters.S;
+    }
+
+    private get PC() {
+        return this._cpuRegisters.PC;
+    }
+
+    private set A(value: number) {
+        this._cpuRegisters.A = value & 0xFF;
+    }
+
+    private set X(value: number) {
+        this._cpuRegisters.X = value & 0xFF;
+    }
+
+    private set Y(value: number) {
+        this._cpuRegisters.Y = value & 0xFF;
+    }
+
+    private set P(value: number) {
+        this._cpuRegisters.P = value & 0xFF;
+    }
+
+    private set S(value: number) {
+        this._cpuRegisters.S = value & 0xFF;
+    }
+
+    private set PC(value: number) {
+        this._cpuRegisters.PC = value & 0xFFFF;
+    }
+}
+```
+
+As a quick note -- always try to do the conversion in ensuring registers store the values in their appropriate width when performing a `write` operation. These types of operations occur less frequently than `read` operations and because of this, will impact performance less.
+
+The A, X and Y registers are simple registers that just store numbers. 
+
+For the status register, there are 7 defined fields within the 8 possible bits in this register. An `enum` is a good way to keep a reference of the specific bit positions of the status register:
+
+```
+enum CpuStatusBitPositions {
+    Carry = 0,
+    Zero = 1,
+    IrqDisable = 2,
+    DecimalMode = 3,
+    BrkCausesIrq = 4,
+    UnusedBit5 = 5,
+    Overflow = 6,
+    Negative = 7
+};
+```
+
+Then a few helpers can be created to directly manipulate on the status register for the CPU. It will be very convenient to set and clear the status fields with these:
+
+```
+private _setStatus(field: CpuStatusBitPositions) {
+    this.P |= (1 << field);
+}
+
+private _clearStatus(field: CpuStatusBitPositions) {
+    this.P &= ~(1 << field);
+}
+
+private _isStatusFieldSet(field: CpuStatusBitPositions) {
+    return (this.P & (1 << field)) > 0;
+}
+```
+
+Then the intention is to use these methods like this:
+
+```
+// Sets the ZERO flag
+this._setStatus(CpuStatusBitPositions.Zero);
+
+....
+
+
+// Clears the ZERO flag
+this._clearStatus(CpuStatusBitPositions.Zero);
+```
+
+#### Stack
+
+The stack is 256 bytes long and ranges in memory from `0x100` to `0x1FF`. The processor `S` register then stores the current location in memory, the current location of the stack pointer.
+
+The stack pointer will GROW downwards. That is, `0x1FF` is the **first address** and subsequent pushes will **decrement** this address. Pulling data from the stack will **increment** this address.
+
+When the stack is pushed:
+
+1. Push data to the current address in memory signified by the S pointer. 
+2. Decrement the S pointer.
+
+When the stack is pulled:
+
+1. Increment the S pointer.
+2. Return the data found in memory indicated by this pointer.
+
+Note that the verbiage here is "pulled" and not "pop". When pulling (reading) data by the stack pointer, the value will still exist, but will be overwritten on the next stack push.
+
+If the stack is only 8 bits, then we will also have to use a mask of `0x100` during memory operations to get the **real** address in memory indicated by the stack pointer.
+
+```
+private _stackPush(data: number) {
+    this._memory.set(0x100 | this.S, data);
+    this.S--;
+}
+
+private _stackPull() {
+    this.S++;
+    return this._memory.get(0x100 | this.S);
+}
+```
+
+#### Program Counter
