@@ -1,3 +1,4 @@
+import { InstructionSizes } from './cpu.constants';
 import { Memory } from './memory';
 
 interface ICpuRegisters {
@@ -20,9 +21,33 @@ enum CpuStatusBitPositions {
     Overflow = 6,
     Negative = 7
 };
+
+function read16(memory: Memory, address: number) {
+    const lo = memory.get(address);
+    const hi = memory.get(address + 1);
+
+    return ((hi << 8) | lo) & 0xFFFF;
+}
+
+function read16Bug(memory: Memory, address: number) {
+    const a = address;
+
+    const bHi = a & 0xFF00;
+    const bLo = (a + 1) & 0xFF;
+    const b = bHi | bLo;
+
+    const effLo = memory.get(a);
+    const effHi = memory.get(b);
+
+    const effAddress = ((effHi << 8) | effLo) & 0xFFFF;
+
+    return effAddress;
+}
 /* eslint-enable */
 
 export default class Cpu {
+    private _running: boolean;
+
     private _cpuRegisters: ICpuRegisters;
 
     private _memory: Memory;
@@ -37,6 +62,7 @@ export default class Cpu {
             PC: 0
         };
         this._memory = new Memory();
+        this._running = true;
     }
 
     private get A() {
@@ -80,7 +106,7 @@ export default class Cpu {
     }
 
     private set S(value: number) {
-        this._cpuRegisters.S = value & 0xFF;
+        this._cpuRegisters.S = value & 0xFFFF;
     }
 
     private set PC(value: number) {
@@ -107,5 +133,16 @@ export default class Cpu {
     private _stackPull() {
         this.S++;
         return this._memory.get(0x100 | this.S);
+    }
+
+    public step() {
+        while (this._running) {
+            const op = this.PC;
+
+            // TODO: Get the operands from the address
+            // in memory based on the addressing mode.
+
+            this.PC += InstructionSizes[op];
+        }
     }
 }

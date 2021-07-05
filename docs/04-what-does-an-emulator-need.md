@@ -21,6 +21,10 @@ Fun fact, Marat was the one who originally came up with the `.nes` file format f
 
 ## A Good Start
 
+### Endian 
+
+The NES is a little-endian machine. That means the lowest byte is fetched first in the 16 bit address.
+
 ### Memory
 
 To build some confidence in coding. We can build a basic memory class to contain 64 KB of data. This is the total addressable memory for an 8-bit system like the NES.
@@ -354,4 +358,126 @@ private _stackPull() {
 }
 ```
 
+> **Important**. Only the A and P register can be pushed onto and pulled from the stack.
+
 #### Program Counter
+
+The program counter can store a range of `0x0000` to `0xFFFF`. Therefore it is 16 bits wide, and incrementing past `0xFFFF` will wrap itself to `0x0000`.
+
+There are 255 opcodes.
+
+Each instruction fetched will contain an opcode. The opcode will determine whether the instruction is 0, 1 or 2 bytes long.
+
+The length of the instruction is how much to increment the Program Counter.
+
+The opcodes each will have a definite length if they are used within an instruction.
+
+For example, one of the variants of `ORA` opcode will be 2 bytes in length. Which means to increment the program counter by 2 if the opcode is read.
+
+Pretending that we have an instruction size table called `InstructionSizes`, a typical fetch from memory into the program counter would look like this:
+
+```
+const op = this._memory.get(this.PC);
+
+// acquire the operands here
+
+this.PC += InstructionSizes[op];
+```
+
+Refer to **Programming the 65816** for the specific number of bytes each instruction has for an opcode.
+
+#### Addressing Modes
+
+The power of the 6502 comes from addressing modes. There are 14 of them. Passing an input address into an addressing mode will give the effective address on where the operand is in memory. 
+
+The different kinds of addressing modes:
+
+1. Implied
+2. Accumulator
+3. Immediate
+4. Absolute
+5. Program Counter Relative
+6. Stack
+7. Zero Stack
+8. Absolute Indexed with X
+9. Absolute Indexed with Y
+10. Zero Page Indexed with X
+11. Zero Page Indexed with Y
+12. Absolute Indirect
+13. Zero Page Indirect Indexed with Y (Post Indexed)
+14. Zero Page Indexed Indirect with X (Pre Indexed)
+
+![](./images/04-addressing-modes.png)
+
+#### What is Zero-Paged Memory?
+
+Any **page** of memory in the 6502 architecture is considered to be 256 bytes long. That means "zero page" is the first page in memory (0-indexed). This makes zero page have a range of `0x0000` to `0x00FF`. **Zero page addressing** is just a more convenient absolute addressing where it only refers to the first 256 bytes in memory. Instead of **absolute addressing** where 2 bytes are needed to represent an address, **zero page addressing** only needs 1. This results in less latency (clock cycles) when used.
+
+> **Important**. Sometimes the term "Direct Page" is used interchangeably with Zero Page.
+
+#### Indexing
+
+For the addressing modes involving indexing, the simple ones just take some base address, and adds the offset specified in the X, and Y registers to obtain the effective address. These are:
+
+* Absolute Indexed with X
+* Absolute Indexed with Y
+* Zero Page Indexed with X
+* Zero Page Indexed with Y
+
+The more complicated ones are called "indirect" indexing. Basically, given some base address and offset, we can go to that "indirect address", and within that "indirect address" contains the values needed to build the "effective address". That is, the effective addresses are stored in some location in memory, and must be read.
+
+As for the difference in **postindexed** and **preindexed** addressing... Think of it this way: 
+
+* postindexed - Get the indirect address, then go find the effective address. Add the index to that effective address.
+* preindexed - Get the indirect address, add the index to that indirect address and find the effective address
+
+![](./images/04-indirection-example.png)
+
+#### Instructions
+
+There are 56 different types operations which can be performed. Taking into consideration that each operation can take on different forms based on addressing modes, there can be 151 different instructions (opcodes) which the 6502 can execute.
+
+Each instruction has two specific properties:
+
+1. A fixed number of cycles it will take to complete
+2. The byte length it occupies in memory
+
+Again, we are lucky here in that this information is available and fixed, making 6502 pretty easy emulate when it comes to instruction timing.
+
+Implementing an instruction in the CPU is just writing the necessary code to achieve the desired result.
+
+#### Bugs
+
+Known bug is that if indirect addressing is used with a jump instruction where the address ends in `0xFF`, what **SHOULD** happen is that the PC will get the new low byte at `0x20FF`, but the new high byte at `0x2100`. However, what actually happens is that there is a fail to carry and the addresses which bytes are fetched are at `0x20FF` and then `0x2000`.
+
+For the emulator, this type of behavior **must be considered** during implementation if wanting accuracy to the hardware.
+
+The two utility methods are implemented to perform a standard 16-bit address read and a 16-bit address read with this specific but:
+
+```
+function read16(memory: Memory, address: number) {
+    const lo = memory.get(address);
+    const hi = memory.get(address + 1);
+
+    return ((hi << 8) | lo) & 0xFFFF;
+}
+
+function read16Bug(memory: Memory, address: number) {
+    const a = address;
+
+    const bHi = a & 0xFF00;
+    const bLo = (a + 1) & 0xFF;
+    const b = bHi | bLo;
+
+    const effLo = memory.get(a);
+    const effHi = memory.get(b);
+
+    const effAddress = ((effHi << 8) | effLo) & 0xFFFF;
+
+    return effAddress;
+}
+```
+
+## Input/Output, Audio, Video
+
+TODO.
