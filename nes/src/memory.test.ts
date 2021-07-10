@@ -43,4 +43,32 @@ describe('Memory tests', () => {
         
         expect(memory.get(address)).toBe(expectedValue);
     });
+
+    it('should write and read properly with mirrored RAM', () => {
+        const memory = new Memory();
+
+        const address = 0x100;
+        const value = 0x88;
+
+        // Assign the value at the second mirror of RAM
+        memory.set(1 * 0x800 + address, value);
+
+        expect(memory.get(address)).toBe(value);
+        expect(memory.get(1 * 0x800 + address)).toBe(value);
+        expect(memory.get(2 * 0x800 + address)).toBe(value);
+    });
+
+    it('should write and read properly to a non-mirroed RAM location in memory space', () => {
+        const memory = new Memory();
+
+        const address = 0xC001;
+        const value = 0x88;
+
+        // Assign the value at the second mirror of RAM
+        memory.set(address, value);
+
+        expect(memory.get(address)).toBe(value);
+        expect(memory.get(1 * 0x800 + address)).not.toBe(value);
+        expect(memory.get(2 * 0x800 + address)).not.toBe(value);
+    });
 });

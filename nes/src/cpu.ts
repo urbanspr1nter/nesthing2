@@ -1,6 +1,21 @@
 import { InstructionSizes } from './cpu.constants';
 import { Memory } from './memory';
 
+enum AddressingMode {
+    Immediate,
+    Absolute,
+    AbsoluteIndirect,
+    DirectPage,
+    AbsoluteIndexedX,
+    AbsoluteIndexedY,
+    DirectPageIndexedX,
+    DirectPageIndexedY,
+    DirectPageIndexedIndirectX,
+    DirectPageIndirectIndexedY,
+    Implicit,
+    Accumulator,
+    Relative
+  }
 interface ICpuRegisters {
     A: number;
     X: number;
@@ -9,6 +24,11 @@ interface ICpuRegisters {
     S: number;
     PC: number;
 }
+export interface ICpuCycleContext {
+    PC: number;
+    Address: number;
+    Mode: AddressingMode;
+  }
 
 /* eslint-disable */
 enum CpuStatusBitPositions {
@@ -43,6 +63,11 @@ function read16Bug(memory: Memory, address: number) {
 
     return effAddress;
 }
+
+function addressesCrossPageBoundary(a: number, b: number) {
+    return (a & 0xFF00) !== (b & 0xFF00);
+}
+
 /* eslint-enable */
 
 export default class Cpu {
@@ -51,6 +76,8 @@ export default class Cpu {
     private _cpuRegisters: ICpuRegisters;
 
     private _memory: Memory;
+
+    private _context: ICpuCycleContext;
 
     constructor() {
         this._cpuRegisters = {
@@ -63,6 +90,12 @@ export default class Cpu {
         };
         this._memory = new Memory();
         this._running = true;
+
+        this._context = {
+            PC: this.PC,
+            Address: 0,
+            Mode: AddressingMode.Immediate
+        };
     }
 
     private get A() {
@@ -135,9 +168,74 @@ export default class Cpu {
         return this._memory.get(0x100 | this.S);
     }
 
+    private _setContextState(address: number, addressingMode: AddressingMode) {
+        this._context.PC = this.PC;
+        this._context.Address = address;
+        this._context.Mode = addressingMode;
+    }
+
+    private _getAddressFromMode(mode: AddressingMode) {
+        let address = 0;
+        let pageCrossed = false;
+
+        switch (mode) {
+            case AddressingMode.Immediate:
+                address = this.PC + 1;
+                break;
+            case AddressingMode.Absolute:
+                address = read16(this._memory, this.PC + 1);
+                break;
+            case AddressingMode.AbsoluteIndirect:
+                address = read16Bug(this._memory, read16(this._memory, this.PC + 1));
+                break;
+            case AddressingMode.DirectPage:
+                address = this._memory.get(this.PC + 1) & 0xFF;
+                break;
+            case AddressingMode.AbsoluteIndexedX:
+                address = read16(this._memory, this.PC + 1) + this.X;
+                pageCrossed = addressesCrossPageBoundary(address - this.Y, address);
+                break;
+            case AddressingMode.AbsoluteIndexedY:
+                address = read16(this._memory, this.PC + 1) + this.Y;
+                pageCrossed = addressesCrossPageBoundary(address - this.Y, address);
+                break;
+            case AddressingMode.DirectPageIndexedX:
+                address = (this._memory.get(this.PC + 1) + this.X) & 0xFF;
+                break;
+            case AddressingMode.DirectPageIndexedY:
+                address = (this._memory.get(this.PC + 1) + this.Y) & 0xFF;
+                break;
+            case AddressingMode.DirectPageIndexedIndirectX:
+                address = read16Bug(this._memory, (this._memory.get(this.PC + 1) + this.X) & 0xFF);
+                break;
+            case AddressingMode.DirectPageIndirectIndexedY:
+                address = read16Bug(this._memory, (this._memory.get(this.PC + 1))) + this.Y;
+                pageCrossed = addressesCrossPageBoundary(address - this.Y, address);
+                break;
+            case AddressingMode.Relative:
+                const offset = this._memory.get(this.PC + 1);
+                if (offset < 0x80) {
+                    address = this.PC + 2 + offset;
+                } else {
+                    address = this.PC + 2 + offset - 0x100;
+                }
+                break;
+            case AddressingMode.Accumulator:
+            case AddressingMode.Implicit:
+            default:
+                address = 0;
+                break;
+        }
+
+        return {
+            address: address & 0xFFFF,
+            pageCrossed
+        };
+    }
+
     public step() {
         while (this._running) {
-            const op = this.PC;
+            const op = this._memory.get(this.PC);
 
             // TODO: Get the operands from the address
             // in memory based on the addressing mode.
