@@ -36,7 +36,9 @@ module.exports = {
     'no-useless-constructor': 0,
     'comma-dangle': 0,
     "import/extensions": 0,
-    'no-case-declarations': 0
+    'no-case-declarations': 0,
+    "no-shadow": "off",
+    "@typescript-eslint/no-shadow": ["error"]
   },
   settings: {
     "import/resolver": {

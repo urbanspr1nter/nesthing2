@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "npm run lint  && npx tsc",
+    "build:fast": "npx tsc",
     "build:all": "npm run lint && npm run test && npx tsc",
     "build:watch": "npm run lint && npx tsc --watch",
     "debug": "npm run build && node launch.js && npm run build:watch",
