@@ -189,4 +189,351 @@ if (offset < 0x80) {
 }
 ```
 
+## Page Boundary Crossings
+
+Knowing that reading/writing to a specific address whether page boundary is crossed is very important to keeping track of the number of cycles.
+
+Remember, a **page** is 256 bytes. That means if the 16 bit starting address has the high byte as being different from the end address, then the page has been crossed. 
+
+Therefore, we can have a helper method to determine this:
+
+```
+function _addressesCrossPageBoundary(a: number, b: number) {
+    return (a & 0xFF00) !== (b & 0xFF00);
+}
+```
+
+Then it can be used with the following addressing modes:
+
+* Absolute Indexed with X
+* Absolute Indexed with Y
+* Direct Page Indirect Indexed Y
+
+## Cycle Counting
+
+Since we are on the topic of cycle counting, the CPU will need to keep track of the number of current cycles.
+
+It will just be an instance variable `_cycles` which is initially `0` when the CPU is created.
+
+## Step Function
+
+The CPU exposes a public method called `step` that will run a single instruction in memory.
+
+What is returned are the number of cycles that was executed for that instruction.
+
+Now we can rewrite the main `step` function to behave like:
+
+```
+public step() {
+    const prevCycles = this._cycles;
+    const op = this._memory.get(this.PC);
+    const addressingModesMap: OpAddressingModeMap = OpAddressingMode;
+    const addressInfo = this._getAddressFromMode(addressingModesMap[op]);
+
+    this.PC += InstructionSizes[op];
+    this._cycles += InstructionCyclesCount[op];
+    if (addressInfo.pageCrossed) {
+        this._cycles += InstructionPageCyclesCount[op];
+    }
+
+    this._setContextState(addressInfo.address, addressingModesMap[op]);
+
+    this._handleOp(op);
+
+    return this._cycles - prevCycles;
+}
+```
+
+At this point, running a single step of the CPU allows:
+
+1. Keeping track of current cycles.
+2. Get an op
+3. Determine how to interpret the op by finding the address mode, and the instruction size to increment the PC.
+4. Determine how many cycles will be needed to execute (including page boundary crossing)
+5. Execute the op, with the stubbed method: `_handleOp`.
+
+```
+private _handleOp(op: number) {
+    console.log('Handling op', op);
+    return;
+}
+```
+
+At this point, execution of interrupts are still not considered... but we will get there next.
+
+## Interrupts
+
+If extra discussion in what interrupts are is needed, then please see the previous section and read about interrupts there.
+
+This section doesn't explain interrupts, but will show how to implement it in the CPU.
+
+In the NES, there are 3 interrupt request types: 
+
+1. Reset
+2. NMI
+3. IRQ
+
+It can be expressed as an enum for the CPU:
+
+```
+enum InterruptRequestType {
+    Reset,
+    NMI,
+    IRQ,
+    None
+}
+```
+
+The CPU will then keep track of what interrupt request is being handled. With its default state being `None`.
+
+A hardcoded constant will also serve as a way to quickly reference the address of the interrupt vector locations (the functions to where the CPU can jump to begin running the interrupt routine)
+
+```
+const InterruptVectorLocations = {
+    Reset: {
+        Low: 0xFFFC,
+        High: 0xFFFD
+    },
+    Nmi: {
+        Low: 0xFFFA,
+        High: 0xFFFB
+    },
+    Irq: {
+        Low: 0xFFFE,
+        High: 0xFFFF
+    }
+};
+```
+
+Any other component that interacts with the CPU can request and interrupt with the function `requestInterrupt`. All that is needed for the parameter is the interrupt request type.
+
+```
+public requestInterrupt(reqType: InterruptRequestType) {
+    if (reqType === InterruptRequestType.IRQ 
+        && this._getStatusBitFlag(CpuStatusBitPositions.IrqDisable)) {
+        return;
+    }
+
+    this._interruptRequest = reqType;
+}
+```
+
+Note that the interrupt isn't handled immediately. As it is a **request**, the CPU will receive it and will proceed to handle it upon completion of the instruction.
+
+Then the `step` function can be updated to execute interrupts. Remember that for IRQ interrupts, it should not be executed if the `InterruptDisable` status flag is set.
+
+```
+if (this._interruptRequest === InterruptRequestType.NMI) {
+    // Handle NMI here
+} else if (this._interruptRequest === InterruptRequestType.IRQ
+    && !this._getStatusBitFlag(CpuStatusBitPositions.IrqDisable)) {
+    // Handle IRQ
+}
+```
+
+Implementation of the exact handling logic along with where Reset interrupt happens will be revisited later.
+
+Now, OpCodes will be implemented.
+
+## Handling OpCodes
+
+An opcode can be a maximum of 8 bits in length. Therefore, it is possible to have 255 different opcodes for the 6502. However, only a small number is used.
+
+The `_handlOp` handler will just be a large switch statement that will read in the `op` number, and forward the operation by calling the subhandler. For example, if the opcode is `0xBD`, then it will be an LDA instruction.
+
+When `_handleOp` receives `op` being `0xBD`, it will call the `_lda` function.
+
+Within the `_lda` function, the context is read to determine the address mode, and value to load to accumulator.
+
+This is the general approach to handling individual opcodes.
+
+### Example 1: ADC
+
+This is "add with carry". First, read the address for the value to add to the accumulator. 
+
+* Operand 1 - Accumulator
+* Operand 2 - Value stored in memory address
+* Carry - Current status of the carry bit in  P register
+
+Perform the following operation:
+
+```
+this.A = a + b + carry;
+```
+
+The status flags affected from this operations are:
+
+1. Zero flag (Is the result 0?)
+2. Negative flag (is th result negative?)
+3. Carry flag (Is there a carry from the operation?)
+4. Overflow flag (read: [Overflow Flag in Signed Arithmetic](./08-overflow-flag.md))
+
+Then a simple implemenation will look like this:
+
+```
+private _adc() {
+    const a = this.A;
+    const b = this._memory.get(this._context.Address);
+    const carry = this._getStatusBitFlag(CpuStatusBitPositions.Carry) ? 1 : 0;
+
+    this.A = a + b + carry;
+
+    this._setZero(this.A);
+    this._setNegative(this.A);
+
+    if (isCarry(a, b, carry, true)) {
+        this._setStatus(CpuStatusBitPositions.Carry);
+    } else {
+        this._clearStatus(CpuStatusBitPositions.Carry);
+    }
+
+    if (isOverflowOnAdc(a, b, this.A)) {
+        this._setStatus(CpuStatusBitPositions.Overflow);
+    } else {
+        this._clearStatus(CpuStatusBitPositions.Overflow);
+    }
+}
+```
+
+### Example 2: AND
+
+This is a bitwise-AND. It is an easy implementation, and to implement it, just bitwise-AND the accumulator, and the value found in the specific memory address.
+
+The flags affected are:
+
+1. Zero flag
+2. Negative flag
+
+```
+private _and() {
+    this.A &= this._memory.get(this._context.Address);
+    this._setZero(this.A);
+    this._setNegative(this.A);
+}
+```
+
+### Example 3: BEQ
+
+This is **branch on equal**. Meaning if the status bit of the zero flag is set, then branch to te offset from the current `PC`. 
+
+Note that branching affects the number of cycles executed in the instruction. 
+
+To add branch cycles, a helper method can be defined:
+
+```
+private _addBranchCycles(context: ICpuCycleContext) {
+    this._cycles++;
+    if (addressesCrossPageBoundary(context.PC, context.Address)) {
+        this._cycles++;
+    }
+}
+```
+
+And then can be implement like so:
+
+```
+private _beq() {
+    if (this._getStatusBitFlag(CpuStatusBitPositions.Zero)) {
+        this.PC = this._context.Address;
+        this._addBranchCycles(this._context);
+    }
+}
+```
+
+### Example 4: BRK
+
+BRK forces an NMI and will increment the PC by 1.
+
+The following occurs:
+
+1. Push the current PC stack. First the low byte, followed by high byte.
+2. Push the status register to the stack.
+3. Set the IRQ disable flag int he status register
+
+Then look up the IRQ Vector Location in memory and set the PC to the value in this address.
+
+Then set the interrupt request to `None`.
+
+On the next instruction, since the PC is at the interrupt vector location, the CPU will begin executing the interrupt handler.
+
+```
+```
+
+### Example 5: CMP
+
+Compares the accumulator with the value in memory.
+
+Status flags affected:
+
+1. Zero
+2. Negative
+3. Carry
+
+```
+private _cmp() {
+    const value = this._memory.get(this._context.Address);
+    this._compare(this.A, value);
+}
+```
+
+### Example 6: JMP
+
+Jump directly to address defiend in `PC`.
+
+```
+private _jmp() {
+    this.PC = this._context.Address;
+}
+```
+
+### Example 7: JSR
+
+Jump to subroutine by the address found in PC.
+
+The current address (return address) is built by taking the current address of the JSR instruction. 
+
+Taking this address, we can push the bytes into the stack so we can return. First push the high byte first to the stack, and then following the lower byte.
+
+Then set the `PC` to be the address indicated by JSR.
+
+```
+private _jsr() {
+    const startAddr = this.PC - 1;
+    this._stackPush((startAddr & 0xff00) >>> 8);
+    this._stackPush(startAddr & 0x00ff);
+    this.PC = this._context.Address;
+}
+```
+
+Why `>>>`? It means to shift right, but replace the bits with 0 rather than 1.
+
+### Example 8: LDA
+
+Load byte value found in memory to the accumulator.
+
+```
+private _lda() {
+    this.A = this._memory.get(this._context.Address);
+    this._setNegative(this.A);
+    this._setZero(this.A);
+}
+```
+
+## Interrupt Handling
+
+In this section, details about how to handle the 3 inerrupts are discussed.
+
+### RESET
+
+// Todo
+
+### NMI
+
+// Todo
+
+
+### IRQ
+
+// Todo
+
 ## Power Up State
